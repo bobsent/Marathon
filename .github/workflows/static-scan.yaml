@@ -52,3 +52,116 @@ jobs:
           path: target/bom.json
 
       # ======================================================      
+      
+      - name: Grype Dependency Scanner (Report)
+        id: scan
+        uses: anchore/scan-action@e1165082ffb1fe366ebaf02d8526e7c4989ea9d2 # v7.4.0
+        with:
+          path: "."
+          #acs-report-enable: true
+          fail-build: false # to always generate the report, can be set to true if you wish to fail the build on issues
+
+      - name: Upload Grype SARIF Results
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with: # Yep, you can open this file in your IDE: Just drag and drop it into IntelliJ IDEA or Visual Studio Code
+          name: grype-scan-results.sarif
+          path: ${{ steps.scan.outputs.sarif }}
+
+      # ======================================================    
+
+      - name: Download SpotBugs CLI + FindSecBugs Rule Pack
+        run: |
+          wget -O spotbugs.tgz https://github.com/spotbugs/spotbugs/releases/download/4.9.3/spotbugs-4.9.3.tgz
+          tar -xzf spotbugs.tgz
+          mv spotbugs-*/ spotbugs/
+
+          wget -O findsecbugs.jar https://search.maven.org/remotecontent?filepath=com/h3xstream/findsecbugs/findsecbugs-plugin/1.12.0/findsecbugs-plugin-1.12.0.jar
+          mv findsecbugs.jar spotbugs/plugin/.
+
+      - name: Run SpotBugs CLI (SARIF)
+        run: |
+          spotbugs/bin/spotbugs -sarif:/tmp/raw-spotbugs-output.txt -effort:max -low -auxclasspath lib:target/classes target/classes > /tmp/raw-spotbugs-output.txt
+          grep -A100000 '{"version"' /tmp/raw-spotbugs-output.txt > /tmp/spotbugs-results.sarif
+
+      - name: Upload SpotBugs SARIF Results
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with: # Yep, you can open this file in your IDE: Just drag and drop it into IntelliJ IDEA or Visual Studio Code
+          name: spotbugs-scan-results.sarif
+          path: /tmp/spotbugs-results.sarif
+
+      # ======================================================
+
+      - name: Hadolint Dockerfile Linter
+        uses: hadolint/hadolint-action@2332a7b74a6de0dda2e2221d575162eba76ba5e5 # v3.3.0
+        with:
+          dockerfile: Dockerfile
+          recursive: true
+          no-fail: true
+          format: sarif
+          #output-file: /tmp/hadolint-results.sarif # didn't work
+
+      - name: Write HADOLINT_RESULTS to SARIF file
+        run: echo "$HADOLINT_RESULTS" > /tmp/hadolint-results.sarif
+        env:
+          HADOLINT_RESULTS: ${{ env.HADOLINT_RESULTS }}
+
+      - name: Upload Hadolint SARIF Results
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with: # Yep, you can open this file in your IDE: Just drag and drop it into IntelliJ IDEA or Visual Studio Code
+          name: hadolint-scan-results.sarif
+          path: /tmp/hadolint-results.sarif
+
+      # ======================================================
+
+      - name: Create empty ".truffleignore" in case it doesn't exist
+        run: touch .truffleignore
+
+      - name: "Secret Scan with Trufflehog"
+        uses: trufflesecurity/trufflehog@37b77001d0174ebec2fcca2bd83ff83a6d45a3ab # v3.95.3
+        continue-on-error: true # adjust on your needs to automatically fail or move to a separate workflow if needed
+        with: # exclusions in .truffleignore file
+          # Repository path
+          path: ./
+          # Start scanning from here (usually main branch).
+          base: ${{ github.head_ref }}
+          # Scan commits until here (usually dev branch).
+          #head: # optional
+          # Extra args to be passed to the trufflehog cli.
+          extra_args: --exclude-paths=.truffleignore --no-verification
+
+
+
+
+  # ======================================================
+
+
+  semgrep-scan:
+    name: Semgrep Scans
+    runs-on: ubuntu-latest
+    container:
+      # A Docker image with Semgrep installed. Do not change this.
+      image: semgrep/semgrep@sha256:207983631beecdbe7fa29196c7f4a7a5f29033933cdb76c687ce4a672e07618d # 1.164.0
+    permissions:
+      # required for all workflows
+      security-events: write
+      # only required for workflows in private repositories
+      actions: read
+      contents: read
+
+    steps:
+
+      - name: Checkout Sources
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+          fetch-depth: 1
+
+      - name: Run Semgrep using selected rules (metrics off)
+        run: |
+          semgrep scan --sarif --config auto . --output /tmp/semgrep-results.sarif || true
+
+      - name: Upload Semgrep SARIF Results
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with: # Yep, you can open this file in your IDE: Just drag and drop it into IntelliJ IDEA or Visual Studio Code
+          name: semgrep-scan-results.sarif
+          path: /tmp/semgrep-results.sarif
